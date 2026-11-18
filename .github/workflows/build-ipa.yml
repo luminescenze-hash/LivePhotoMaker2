@@ -1,0 +1,98 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -project LivePhotoMaker.xcodeproj \
+            -scheme LivePhotoMaker \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/Build/Products/Release-iphoneos/LivePhotoMaker.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "构建产物不存在：$APP_PATH"
+            exit 1
+          fi
+          if [[ ! -f "$APP_PATH/LivePhotoMaker" ]]; then
+            echo "可执行文件缺失：$APP_PATH/LivePhotoMaker"
+            exit 1
+          fi
+
+          # 确认两个相册权限描述都已写入 Info.plist（缺读取描述会在真机请求授权时崩溃）。
+          /usr/libexec/PlistBuddy -c "Print :NSPhotoLibraryUsageDescription" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :NSPhotoLibraryAddUsageDescription" "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+
+          # 强制写入 open-in-place / ITunes 文件共享两个键，避免生成式 Info.plist 未注入导致
+          # 文件选择器里无法选择文件夹（本轮问题根因）。
+          for KEY in LSSupportsOpeningDocumentsInPlace UIFileSharingEnabled; do
+            if /usr/libexec/PlistBuddy -c "Print :$KEY" "$APP_PATH/Info.plist" >/dev/null 2>&1; then
+              /usr/libexec/PlistBuddy -c "Set :$KEY true" "$APP_PATH/Info.plist"
+            else
+              /usr/libexec/PlistBuddy -c "Add :$KEY bool true" "$APP_PATH/Info.plist"
+            fi
+            echo "$KEY = $(/usr/libexec/PlistBuddy -c "Print :$KEY" "$APP_PATH/Info.plist")"
+          done
+
+          rm -rf Payload dist
+          mkdir -p Payload dist
+          cp -R "$APP_PATH" Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload dist/LivePhotoMaker-unsigned.ipa
+
+          # 用 sed 截断前 30 行，避免 head 提前关闭管道触发 SIGPIPE（set -o pipefail 下会判为失败）。
+          unzip -l dist/LivePhotoMaker-unsigned.ipa | sed -n '1,30p'
+          shasum -a 256 dist/LivePhotoMaker-unsigned.ipa
+          ls -lh dist/LivePhotoMaker-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LivePhotoMaker-unsigned-ipa
+          path: dist/LivePhotoMaker-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

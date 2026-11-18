@@ -1,0 +1,29 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/project.xcworkspace/
+!*.xcodeproj/xcshareddata/
+xcuserdata/
+*.xcuserstate
+
+# 构建产物
+dist/
+Payload/
+*.ipa
+*.xcarchive
+
+# 本地签名配置（不要上传真实配置）
+ExportOptions.plist
+*.p12
+*.mobileprovision
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.resolved
